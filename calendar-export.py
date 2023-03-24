@@ -10,12 +10,26 @@ from googleapiclient.errors import HttpError
 
 
 def check_credentials_file(file_path):
+    """
+    Check if the credentials file exists at the given file path.
+    If not, print an error message and exit the script.
+
+    :param file_path: str, path to the credentials file
+    """
     if not os.path.exists(file_path):
         print(f"Error: {file_path} not found. Please download your credentials file from the Google API Console and place it in the script's directory.")
         exit(1)
 
 
 def get_credentials():
+    """
+    Obtain and return valid Google API credentials.
+    If the token file exists and the credentials are valid, use them.
+    If the token file exists but the credentials are expired, refresh them.
+    If the token file doesn't exist or the credentials are invalid, prompt the user to authenticate.
+
+    :return: google.oauth2.credentials.Credentials object
+    """
     creds = None
     token_file = 'token.json'
     credentials_file = 'credentials.json'
@@ -26,7 +40,8 @@ def get_credentials():
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh()
+            from google.auth.transport.requests import Request
+            creds.refresh(Request())  # Add the required Request object here
         else:
             scopes = ['https://www.googleapis.com/auth/calendar.readonly']
             flow = InstalledAppFlow.from_client_secrets_file(
@@ -40,6 +55,18 @@ def get_credentials():
 
 
 def export_calendar(num_days=7, output_mode='csv', output_file=None, output_screen=False):
+    """
+    Export Google Calendar events for the last num_days in the specified output_mode (CSV or JSON).
+    If output_file is provided, save the events to the file.
+    If output_screen is True, print the events to the screen.
+    If both output_file and output_screen are not provided or False, save the events to a default file.
+
+    :param num_days: int, number of days to look back (default: 7)
+    :param output_mode: str, output format ('csv' or 'json', default: 'csv')
+    :param output_file: str, output file name (default: None)
+    :param output_screen: bool, whether to print the output to the screen (default: False)
+    """
+
     # Access Google Calendar API
     creds = get_credentials()
     service = build('calendar', 'v3', credentials=creds)
