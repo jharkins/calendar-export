@@ -16,6 +16,53 @@ load_dotenv()
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
 
+class SummarizationError(Exception):
+    pass
+
+
+def parse_arguments():
+    parser = argparse.ArgumentParser(
+        description="Summarize Google Calendar events for the last N days"
+    )
+    parser.add_argument(
+        "input_file",
+        help="Input file containing calendar events",
+    )
+    parser.add_argument(
+        "-i", "--input_mode",
+        help="Input file format (csv or json)",
+        choices=["csv", "json"],
+        default="csv",
+    )
+    parser.add_argument(
+        "output_file",
+        help="Output file to write summarized events",
+    )
+    parser.add_argument(
+        "-o", "--output_mode",
+        help="Output file format (csv or json)",
+        choices=["csv", "json"],
+        default="json",
+    )
+    parser.add_argument(
+        "-n", "--num-days",
+        help="Number of days to summarize (default: 7)",
+        type=int,
+        default=7,
+    )
+    parser.add_argument(
+        "-v", "--verbose",
+        help="Print additional information",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--summarize_all",
+        help="Generate an executive summary of all events",
+        action="store_true",
+    )
+    return parser.parse_args()
+
+
 def read_calendar_events(input_file, input_mode):
     events = []
 
@@ -36,39 +83,56 @@ def read_calendar_events(input_file, input_mode):
 
 
 async def generate_summary(event):
+    input_messages = [
+        {
+            "role": "assistant",
+            "content": "Please summarize the following event description and if possible include dates/times:",
+        },
+        {"role": "user", "content": json.dumps(event)},
+    ]
+
     async with aiohttp.ClientSession() as session:
         async with session.post(
             "https://api.openai.com/v1/chat/completions",
             json={
                 "model": "gpt-3.5-turbo",
-                "messages": [
-                    {
-                        "role": "assistant",
-                        "content": "Please summarize the following event description and if possible include dates/times:",
-                    },
-                    {"role": "user", "content": json.dumps(event)},
-                ],
-                "max_tokens": 50,
+                "messages": input_messages,
             },
             headers={"Authorization": f"Bearer {openai.api_key}"},
         ) as response:
             completion = await response.json()
-    summary = completion["choices"][0]["message"]["content"].strip()
+            if "choices" not in completion:
+                print("Error with API response:", completion)
+                raise SummarizationError("Failed to generate summary")
+            summary = completion["choices"][0]["message"]["content"].strip()
     return summary
 
 
 def generate_summary_for_all_events(summarized_events: List[str]) -> str:
-    completion = openai.ChatCompletion.create(
-        model="gpt-3.5-turbo",
-        messages=[
-            {"role": "assistant",
-                "content": "Please provide an executive summary of the following summarized events - make sure to keep it fairly high level:"},
-            {"role": "user", "content": json.dumps(summarized_events)}
-        ],
-        max_tokens=200,
-    )
-    summary = completion.choices[0].message['content'].strip()
-    return summary
+    se = [{"role": "user", "content": json.dumps(
+        s)} for i, s in enumerate(summarized_events)]
+
+    messages = [
+        {"role": "assistant",
+         "content": "Please provide an executive summary of the following summarized events - make sure to keep it fairly high level:"},
+    ]+se
+
+    try:
+        completion = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=messages,
+        )
+        if "choices" in completion:
+            summary = completion["choices"][0]['message']['content'].strip()
+            return summary
+    except openai.error.InvalidRequestError:
+        if len(summarized_events) == 1:
+            raise ValueError("Failed to summarize event.")
+        else:
+            midpoint = len(summarized_events) // 2
+            first_half = summarized_events[:midpoint]
+            second_half = summarized_events[midpoint:]
+            return generate_summary_for_all_events(first_half) + generate_summary_for_all_events(second_half)
 
 
 async def summarize_events(events, verbose=False):
@@ -98,92 +162,54 @@ async def summarize_events(events, verbose=False):
     return summarized_events
 
 
-def log_event(message):
+def log_event(message, verbose=False):
     if verbose:
         print(message)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Summarize exported Google Calendar events"
-    )
-    parser.add_argument(
-        "input_file", type=str, help="Input file name with exported calendar events"
-    )
-    parser.add_argument(
-        "-i",
-        "--input_mode",
-        choices=["json", "csv"],
-        default="csv",
-        help="Input file mode: json or csv (default: csv)",
-    )
-
-    parser.add_argument(
-        "-o",
-        "--output_file",
-        type=str,
-        default="summarized_events.json",
-        help="Output file name for summarized calendar events",
-    )
-    parser.add_argument(
-        "-m",
-        "--output_mode",
-        choices=["json"],
-        default="json",
-        help="Output mode: json (default: json)",
-    )
-
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-        default=False,
-        help="Enable verbose output",
-    )
-
-    parser.add_argument(
-        "--summarize_all",
-        action="store_true",
-        default=False,
-        help="Summarize all events and print the result",
-    )
-
-    args = parser.parse_args()
+    args = parse_arguments()
 
     verbose = args.verbose
 
-    if not os.path.isfile(args.input_file):
-        log_event(f"Error: Input file {args.input_file} not found.", verbose)
+    try:
+        if not os.path.isfile(args.input_file):
+            log_event(
+                f"Error: Input file {args.input_file} not found.", verbose)
+            sys.exit(1)
+
+        if args.input_mode == "csv" and not args.input_file.endswith(".csv"):
+            log_event("Error: Input file must be a CSV file.", verbose)
+            sys.exit(1)
+
+        if args.input_mode == "json" and not args.input_file.endswith(".json"):
+            log_event("Error: Input file must be a JSON file.", verbose)
+            sys.exit(1)
+
+        if args.output_mode == "csv" and not args.output_file.endswith(".csv"):
+            log_event("Error: Output file must be a CSV file.", verbose)
+            sys.exit(1)
+
+        if args.output_mode == "json" and not args.output_file.endswith(".json"):
+            log_event("Error: Output file must be a JSON file.", verbose)
+            sys.exit(1)
+
+        events = read_calendar_events(args.input_file, args.input_mode)
+
+        # summarized_events = summarize_events(events)
+        summarized_events = asyncio.run(summarize_events(events))
+
+        with open(args.output_file, "w") as jsonfile:
+            json.dump(summarized_events, jsonfile, indent=2)
+
+        log_event(f"Summarized events saved to {args.output_file}")
+
+        if args.summarize_all:
+            summarized_all = generate_summary_for_all_events(summarized_events)
+            print("\nSummary of all events:")
+            print(summarized_all)
+            print("\n")
+
+    except SummarizationError as e:
+        log_event(f"Error: {e}", verbose)
         sys.exit(1)
-
-    if args.input_mode == "csv" and not args.input_file.endswith(".csv"):
-        log_event("Error: Input file must be a CSV file.", verbose)
-        sys.exit(1)
-
-    if args.input_mode == "json" and not args.input_file.endswith(".json"):
-        log_event("Error: Input file must be a JSON file.", verbose)
-        sys.exit(1)
-
-    if args.output_mode == "csv" and not args.output_file.endswith(".csv"):
-        log_event("Error: Output file must be a CSV file.", verbose)
-        sys.exit(1)
-
-    if args.output_mode == "json" and not args.output_file.endswith(".json"):
-        log_event("Error: Output file must be a JSON file.", verbose)
-        sys.exit(1)
-
-    events = read_calendar_events(args.input_file, args.input_mode)
-
-    # summarized_events = summarize_events(events)
-    summarized_events = asyncio.run(summarize_events(events))
-
-    with open(args.output_file, "w") as jsonfile:
-        json.dump(summarized_events, jsonfile, indent=2)
-
-    log_event(f"Summarized events saved to {args.output_file}")
-
-    if args.summarize_all:
-        summarized_all = generate_summary_for_all_events(summarized_events)
-        print("\nSummary of all events:")
-        print(summarized_all)
-        print("\n")

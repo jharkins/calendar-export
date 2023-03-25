@@ -55,7 +55,7 @@ OPENAI_API_KEY=your_openai_api_key_here
 
 ### Export Calendar Events
 
-python calendar-export.py [-d DAYS] [-m {json,csv}] [-f FILE | -o]
+`python calendar-export.py [-d DAYS] [-m {json,csv}] [-f FILE | -o]`
 
 - -d, --days: Number of days to look back (default: 7)
 - -m, --mode: Output mode: json or csv (default: csv)
