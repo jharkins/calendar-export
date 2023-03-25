@@ -135,3 +135,5 @@ token.json
 # Generated CSV and JSON files
 *.csv
 *.json
+
+.env
